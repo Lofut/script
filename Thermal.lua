@@ -5,6 +5,11 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 
+-- Small startup delay. Xeno occasionally crashes if a script runs the
+-- instant it injects, before the client has settled. This gives it a
+-- moment to finish its post-injection initialization.
+task.wait(1)
+
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
@@ -27,13 +32,12 @@ local Settings = {
     ScanRate = 20
 }
 
--- Highlight cache folder so unload only has to destroy one instance.
 local HighlightCache = Instance.new("Folder")
 HighlightCache.Name = "UltimateX_Highlights"
 HighlightCache.Parent = CoreGui
 
-local ESP = {}          -- [player] = data
-local BotESP = {}       -- [model] = data
+local ESP = {}
+local BotESP = {}
 local Connections = {}
 local Unloaded = false
 
@@ -43,7 +47,7 @@ local RevealCooldown = false
 local RevealCooldownEnd = 0
 
 local REVEAL_DURATION = 10
-local REVEAL_COOLDOWN = 10
+local REVEAL_COOLDOWN = 30
 
 local SavedLighting = nil
 
@@ -65,12 +69,11 @@ local RefreshDarkToggle
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "UltimateX"
 ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
 Main.Size = UDim2.new(0, 280, 0, 560)
-Main.Position = UDim2.new(0.5, -140, 0.5, -280)
+Main.Position = UDim2.new(0.5, -140, 0.5, -280 - 58)
 Main.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
 Main.BorderSizePixel = 0
 Main.ClipsDescendants = true
@@ -89,7 +92,7 @@ MainStroke.Parent = Main
 -- CUSTOM CURSOR OVERLAY
 --------------------------------------------------
 
-local CURSOR_Y_OFFSET = 0
+local CURSOR_RENDER_OFFSET = -58
 
 local CursorDot = Instance.new("Frame")
 CursorDot.Name = "UltimateX_Cursor"
@@ -129,7 +132,7 @@ local CursorVisible = false
 
 local function getCursorPosition()
     local pos = UserInputService:GetMouseLocation()
-    return Vector2.new(pos.X, pos.Y + CURSOR_Y_OFFSET)
+    return Vector2.new(pos.X, pos.Y + CURSOR_RENDER_OFFSET)
 end
 
 local function updateCursorVisibility()
@@ -160,7 +163,7 @@ local function updateCursorVisibility()
     end
 end
 
-table.insert(Connections, RunService.RenderStepped:Connect(function()
+table.insert(Connections, RunService.Heartbeat:Connect(function()
     if Unloaded then return end
 
     updateCursorVisibility()
@@ -471,7 +474,7 @@ end
 
 RevealButton.MouseButton1Click:Connect(activateReveal)
 
-table.insert(Connections, RunService.RenderStepped:Connect(function()
+table.insert(Connections, RunService.Heartbeat:Connect(function()
     local now = tick()
 
     if RevealActive then
@@ -757,6 +760,7 @@ end
 
 for _, player in ipairs(Players:GetPlayers()) do
     setupPlayer(player)
+    task.wait()
 end
 
 table.insert(Connections, Players.PlayerAdded:Connect(setupPlayer))
@@ -929,7 +933,6 @@ end))
 --------------------------------------------------
 
 local lastScan = 0
-local darkTick = 0
 
 local function processTarget(target, data, camPos, effectiveMaxDistance, now)
     if not data.BoundChar or not data.BoundChar.Parent then
@@ -1000,12 +1003,11 @@ end
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if Unloaded then return end
 
+    -- Re-apply dark values every frame so a game script that touches
+    -- Lighting can't slowly undo them. Also prevents the ambient flicker
+    -- that happened with the throttled version.
     if Settings.DarkEnvironment then
-        darkTick = darkTick + 1
-        if darkTick >= 5 then
-            darkTick = 0
-            applyDarkValues()
-        end
+        applyDarkValues()
     end
 
     local now = tick()
