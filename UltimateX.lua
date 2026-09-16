@@ -43,7 +43,7 @@ local RevealCooldown = false
 local RevealCooldownEnd = 0
 
 local REVEAL_DURATION = 10
-local REVEAL_COOLDOWN = 30
+local REVEAL_COOLDOWN = 10
 
 local SavedLighting = nil
 
