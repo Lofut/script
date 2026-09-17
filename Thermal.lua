@@ -5,9 +5,6 @@ local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 
--- Small startup delay. Xeno occasionally crashes if a script runs the
--- instant it injects, before the client has settled. This gives it a
--- moment to finish its post-injection initialization.
 task.wait(1)
 
 local LocalPlayer = Players.LocalPlayer
@@ -685,6 +682,17 @@ local function createTargetData(isTargetBot)
     highlight.Adornee = nil
     highlight.Parent = HighlightCache
 
+    -- Armor highlight: brighter and warmer than the body so armor reads
+    -- as a distinct, hotter heat signature.
+    local armorHighlight = Instance.new("Highlight")
+    armorHighlight.Name = "UltimateX_ArmorHighlight"
+    armorHighlight.FillTransparency = 0.15
+    armorHighlight.OutlineTransparency = 1
+    armorHighlight.DepthMode = Enum.HighlightDepthMode.Occluded
+    armorHighlight.Enabled = false
+    armorHighlight.Adornee = nil
+    armorHighlight.Parent = HighlightCache
+
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "UltimateX_Info"
     billboard.Size = UDim2.new(0, 150, 0, 40)
@@ -706,13 +714,16 @@ local function createTargetData(isTargetBot)
 
     if isTargetBot then
         highlight.FillColor = Color3.fromRGB(255, 30, 30)
+        armorHighlight.FillColor = Color3.fromRGB(255, 30, 30)
         text.TextColor3 = Color3.fromRGB(255, 30, 30)
     else
         highlight.FillColor = Color3.fromRGB(255, 255, 255)
+        armorHighlight.FillColor = Color3.fromRGB(255, 210, 130)
     end
 
     return {
         Highlight = highlight,
+        ArmorHighlight = armorHighlight,
         Billboard = billboard,
         Text = text,
         IsBot = isTargetBot,
@@ -721,6 +732,7 @@ local function createTargetData(isTargetBot)
         LastShowInfo = false,
         BoundChar = nil,
         CharBoundAt = 0,
+        ArmorAdornee = nil,
     }
 end
 
@@ -739,6 +751,15 @@ local function setupPlayer(player)
 
         data.Highlight.Adornee = character
         data.Billboard.Adornee = character:FindFirstChild("HumanoidRootPart")
+
+        local welded = character:FindFirstChild("WeldedObjects")
+        if welded then
+            data.ArmorAdornee = welded
+            data.ArmorHighlight.Adornee = welded
+        else
+            data.ArmorAdornee = nil
+            data.ArmorHighlight.Adornee = nil
+        end
     end
 
     if player.Character then
@@ -752,6 +773,8 @@ local function setupPlayer(player)
 
     table.insert(Connections, player.CharacterRemoving:Connect(function()
         data.Highlight.Adornee = nil
+        data.ArmorHighlight.Adornee = nil
+        data.ArmorAdornee = nil
         data.Billboard.Adornee = nil
         data.BoundChar = nil
         data.CharBoundAt = 0
@@ -769,6 +792,7 @@ table.insert(Connections, Players.PlayerRemoving:Connect(function(player)
     local data = ESP[player]
     if data then
         if data.Highlight then data.Highlight:Destroy() end
+        if data.ArmorHighlight then data.ArmorHighlight:Destroy() end
         if data.Billboard then data.Billboard:Destroy() end
         ESP[player] = nil
     end
@@ -782,6 +806,7 @@ local function removeBot(model)
     local data = BotESP[model]
     if not data then return end
     if data.Highlight then data.Highlight:Destroy() end
+    if data.ArmorHighlight then data.ArmorHighlight:Destroy() end
     if data.Billboard then data.Billboard:Destroy() end
     BotESP[model] = nil
 end
@@ -794,6 +819,12 @@ local function registerBot(model)
     data.CharBoundAt = tick()
     data.Highlight.Adornee = model
     data.Billboard.Adornee = model:FindFirstChild("HumanoidRootPart")
+
+    local welded = model:FindFirstChild("WeldedObjects")
+    if welded then
+        data.ArmorAdornee = welded
+        data.ArmorHighlight.Adornee = welded
+    end
 end
 
 local function tryRegisterBot(obj)
@@ -938,6 +969,7 @@ local function processTarget(target, data, camPos, effectiveMaxDistance, now)
     if not data.BoundChar or not data.BoundChar.Parent then
         if data.LastShown then
             data.Highlight.Enabled = false
+            if data.ArmorHighlight then data.ArmorHighlight.Enabled = false end
             data.LastShown = false
         end
         if data.LastShowInfo then
@@ -962,15 +994,22 @@ local function processTarget(target, data, camPos, effectiveMaxDistance, now)
 
     if data.LastShown ~= shouldShow then
         data.Highlight.Enabled = shouldShow
+        if data.ArmorHighlight then
+            data.ArmorHighlight.Enabled = shouldShow and data.ArmorAdornee ~= nil
+        end
         data.LastShown = shouldShow
     end
 
     if shouldShow then
         local wantXray = RevealActive
         if data.LastXray ~= wantXray then
-            data.Highlight.DepthMode = wantXray
+            local mode = wantXray
                 and Enum.HighlightDepthMode.AlwaysOnTop
                 or  Enum.HighlightDepthMode.Occluded
+            data.Highlight.DepthMode = mode
+            if data.ArmorHighlight then
+                data.ArmorHighlight.DepthMode = mode
+            end
             data.LastXray = wantXray
         end
     end
@@ -1003,9 +1042,6 @@ end
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if Unloaded then return end
 
-    -- Re-apply dark values every frame so a game script that touches
-    -- Lighting can't slowly undo them. Also prevents the ambient flicker
-    -- that happened with the throttled version.
     if Settings.DarkEnvironment then
         applyDarkValues()
     end
