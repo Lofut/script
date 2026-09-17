@@ -695,8 +695,6 @@ local function createTargetData(isTargetBot)
     highlight.Adornee = nil
     highlight.Parent = HighlightCache
 
-    -- Armor highlight: brighter and warmer than the body so armor reads
-    -- as a distinct, hotter heat signature.
     local armorHighlight = Instance.new("Highlight")
     armorHighlight.Name = "UltimateX_ArmorHighlight"
     armorHighlight.FillTransparency = 0.15
