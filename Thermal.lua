@@ -663,8 +663,21 @@ end
 local function isBot(model)
     if not model or not model:IsA("Model") then return false end
     if isPlayerCharacter(model) then return false end
+
+    -- Skip anything under the local player's character (guns, tools, arms)
+    local localChar = LocalPlayer.Character
+    if localChar and model:IsDescendantOf(localChar) then
+        return false
+    end
+
+    -- Skip anything under the Camera (first-person viewmodels)
+    if model:IsDescendantOf(Camera) then
+        return false
+    end
+
     local humanoid = model:FindFirstChildOfClass("Humanoid")
     if not humanoid then return false end
+
     return getRoot(model) ~= nil
 end
 
