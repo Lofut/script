@@ -10,14 +10,14 @@ task.wait(1)
 local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
---------------------------------------------------
--- KEYBINDS
---------------------------------------------------
-
 local THERMAL_KEYBIND = Enum.KeyCode.N
 local REVEAL_KEYBIND = Enum.KeyCode.H
 
 local STREAM_GRACE = 0.5
+
+local NOTIFY_RANGE = 600
+local NOTIFY_DURATION = 3
+local NOTIFY_COOLDOWN = 15
 
 local Settings = {
     Thermal = true,
@@ -25,6 +25,7 @@ local Settings = {
     ShowBots = false,
     ShowName = false,
     ShowDistance = false,
+    NotifyEnabled = true,
     MaxDistance = 1000,
     ScanRate = 20
 }
@@ -38,16 +39,17 @@ local BotESP = {}
 local Connections = {}
 local Unloaded = false
 
+local NotifyState = {}
+
 local RevealActive = false
 local RevealEnd = 0
 local RevealCooldown = false
 local RevealCooldownEnd = 0
 
 local REVEAL_DURATION = 10
-local REVEAL_COOLDOWN = 20
+local REVEAL_COOLDOWN = 5
 
 local SavedLighting = nil
-
 local DarkWasEnabledBeforeThermalOff = false
 
 local scanExistingBots
@@ -55,9 +57,65 @@ local removeAllBots
 local updateDarkEnvironment
 local activateReveal
 local applyDarkValues
-
 local RefreshThermalToggle
 local RefreshDarkToggle
+
+--------------------------------------------------
+-- TARGET DETECTION HELPERS
+--------------------------------------------------
+
+local function isPlayerCharacter(model)
+    if not model or not model:IsA("Model") then return false end
+    return Players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function getRoot(model)
+    if not model or not model:IsA("Model") then return nil end
+    local root = model:FindFirstChild("HumanoidRootPart")
+    if root and root:IsA("BasePart") then return root end
+    if model.PrimaryPart then return model.PrimaryPart end
+    for _, obj in ipairs(model:GetChildren()) do
+        if obj:IsA("BasePart") then return obj end
+    end
+    return nil
+end
+
+local WEAPON_KEYWORDS = {
+    "weapon", "gun", "rifle", "pistol", "shotgun", "smg", "sniper",
+    "knife", "melee", "dp-", "mod", "handgun", "revolver", "carbine",
+    "ak-", "m4", "ar-", "lmg", "hmg", "launcher", "grenade", "ammo",
+}
+
+local function isBot(model)
+    if not model or not model:IsA("Model") then return false end
+    if isPlayerCharacter(model) then return false end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and model:IsDescendantOf(player.Character) then
+            return false
+        end
+    end
+
+    if model:IsDescendantOf(Camera) then return false end
+
+    local ancestor = model.Parent
+    while ancestor do
+        if ancestor:IsA("Tool") or ancestor:IsA("Backpack") then
+            return false
+        end
+        ancestor = ancestor.Parent
+    end
+
+    local nameLower = model.Name:lower()
+    for _, kw in ipairs(WEAPON_KEYWORDS) do
+        if nameLower:find(kw, 1, true) then return false end
+    end
+
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    return getRoot(model) ~= nil
+end
 
 --------------------------------------------------
 -- GUI
@@ -69,16 +127,14 @@ ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = CoreGui
 
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 280, 0, 560)
+Main.Size = UDim2.new(0, 280, 0, 590)
 Main.Position = UDim2.new(0.5, -140, 0.5, -280 - 58)
 Main.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
 Main.BorderSizePixel = 0
 Main.ClipsDescendants = true
 Main.Parent = ScreenGui
 
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 10)
-MainCorner.Parent = Main
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
 
 local MainStroke = Instance.new("UIStroke")
 MainStroke.Color = Color3.fromRGB(45, 45, 45)
@@ -91,7 +147,7 @@ MainStroke.Parent = Main
 
 local CURSOR_RENDER_OFFSET = -58
 
-local CursorDot = Instance.new("Frame")
+local CursorDot = Instance.new("Frame", ScreenGui)
 CursorDot.Name = "UltimateX_Cursor"
 CursorDot.Size = UDim2.new(0, 6, 0, 6)
 CursorDot.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -99,13 +155,9 @@ CursorDot.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
 CursorDot.BorderSizePixel = 0
 CursorDot.ZIndex = 1000
 CursorDot.Visible = false
-CursorDot.Parent = ScreenGui
+Instance.new("UICorner", CursorDot).CornerRadius = UDim.new(1, 0)
 
-local CursorDotCorner = Instance.new("UICorner")
-CursorDotCorner.CornerRadius = UDim.new(1, 0)
-CursorDotCorner.Parent = CursorDot
-
-local CursorOutline = Instance.new("Frame")
+local CursorOutline = Instance.new("Frame", ScreenGui)
 CursorOutline.Name = "UltimateX_CursorOutline"
 CursorOutline.Size = UDim2.new(0, 14, 0, 14)
 CursorOutline.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -113,11 +165,7 @@ CursorOutline.BackgroundTransparency = 1
 CursorOutline.BorderSizePixel = 0
 CursorOutline.ZIndex = 999
 CursorOutline.Visible = false
-CursorOutline.Parent = ScreenGui
-
-local CursorOutlineCorner = Instance.new("UICorner")
-CursorOutlineCorner.CornerRadius = UDim.new(1, 0)
-CursorOutlineCorner.Parent = CursorOutline
+Instance.new("UICorner", CursorOutline).CornerRadius = UDim.new(1, 0)
 
 local CursorOutlineStroke = Instance.new("UIStroke")
 CursorOutlineStroke.Color = Color3.fromRGB(255, 255, 255)
@@ -128,8 +176,7 @@ CursorOutlineStroke.Parent = CursorOutline
 local CursorVisible = false
 
 local function getCursorPosition()
-    local pos = UserInputService:GetMouseLocation()
-    return Vector2.new(pos.X, pos.Y + CURSOR_RENDER_OFFSET)
+    return UserInputService:GetMouseLocation() + Vector2.new(0, CURSOR_RENDER_OFFSET)
 end
 
 local function updateCursorVisibility()
@@ -162,50 +209,132 @@ end
 
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if Unloaded then return end
-
     updateCursorVisibility()
-
     if not CursorVisible then return end
-
     local mousePos = getCursorPosition()
-
     CursorDot.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
     CursorOutline.Position = UDim2.new(0, mousePos.X, 0, mousePos.Y)
 end))
 
 --------------------------------------------------
+-- PROXIMITY NOTIFICATIONS
+--------------------------------------------------
+
+local ToastHolder = Instance.new("Frame", ScreenGui)
+ToastHolder.Name = "UltimateX_Toasts"
+ToastHolder.Size = UDim2.new(0, 220, 1, -40)
+ToastHolder.Position = UDim2.new(1, -240, 0, 20)
+ToastHolder.BackgroundTransparency = 1
+
+local ToastLayout = Instance.new("UIListLayout", ToastHolder)
+ToastLayout.Padding = UDim.new(0, 6)
+ToastLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ToastLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+
+local function showToast(text, isBot)
+    local toast = Instance.new("Frame", ToastHolder)
+    toast.Size = UDim2.new(1, 0, 0, 32)
+    toast.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    toast.BackgroundTransparency = 1
+    toast.BorderSizePixel = 0
+    Instance.new("UICorner", toast).CornerRadius = UDim.new(0, 6)
+
+    local accentColor = isBot and Color3.fromRGB(255, 60, 60) or Color3.fromRGB(0, 170, 255)
+
+    local stroke = Instance.new("UIStroke", toast)
+    stroke.Color = accentColor
+    stroke.Thickness = 1
+    stroke.Transparency = 1
+
+    local label = Instance.new("TextLabel", toast)
+    label.Size = UDim2.new(1, -16, 1, 0)
+    label.Position = UDim2.new(0, 8, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 12
+    label.Font = Enum.Font.GothamBold
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextTransparency = 1
+
+    TweenService:Create(toast, TweenInfo.new(0.15), { BackgroundTransparency = 0.2 }):Play()
+    TweenService:Create(stroke, TweenInfo.new(0.15), { Transparency = 0.3 }):Play()
+    TweenService:Create(label, TweenInfo.new(0.15), { TextTransparency = 0 }):Play()
+
+    task.delay(NOTIFY_DURATION, function()
+        local fadeOut = TweenInfo.new(0.4, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+        TweenService:Create(toast, fadeOut, { BackgroundTransparency = 1 }):Play()
+        TweenService:Create(stroke, fadeOut, { Transparency = 1 }):Play()
+        local t = TweenService:Create(label, fadeOut, { TextTransparency = 1 })
+        t:Play()
+        t.Completed:Wait()
+        toast:Destroy()
+    end)
+end
+
+local function checkProximityNotifications(camPos)
+    if not Settings.NotifyEnabled then return end
+    local now = tick()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local root = player.Character:FindFirstChild("HumanoidRootPart")
+            local hum = player.Character:FindFirstChildOfClass("Humanoid")
+            if root and hum and hum.Health > 0 then
+                local dist = (camPos - root.Position).Magnitude
+                if dist <= NOTIFY_RANGE then
+                    local last = NotifyState[player] or 0
+                    if now - last >= NOTIFY_COOLDOWN then
+                        NotifyState[player] = now
+                        showToast(player.Name .. " — " .. math.floor(dist) .. " studs", false)
+                    end
+                end
+            end
+        end
+    end
+
+    for model, data in pairs(BotESP) do
+        if data.BoundChar and data.BoundChar.Parent then
+            local root = getRoot(data.BoundChar)
+            local hum = data.BoundChar:FindFirstChildOfClass("Humanoid")
+            if root and hum and hum.Health > 0 then
+                local dist = (camPos - root.Position).Magnitude
+                if dist <= NOTIFY_RANGE then
+                    local last = NotifyState[model] or 0
+                    if now - last >= NOTIFY_COOLDOWN then
+                        NotifyState[model] = now
+                        showToast("[BOT] " .. model.Name .. " — " .. math.floor(dist) .. " studs", true)
+                    end
+                end
+            end
+        end
+    end
+end
+
+--------------------------------------------------
 -- TITLE BAR
 --------------------------------------------------
 
-local TitleBar = Instance.new("Frame")
+local TitleBar = Instance.new("Frame", Main)
 TitleBar.Size = UDim2.new(1, 0, 0, 48)
 TitleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 TitleBar.BorderSizePixel = 0
-TitleBar.Parent = Main
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 10)
 
-local TitleBarCorner = Instance.new("UICorner")
-TitleBarCorner.CornerRadius = UDim.new(0, 10)
-TitleBarCorner.Parent = TitleBar
-
-local TitleBarBottomCover = Instance.new("Frame")
+local TitleBarBottomCover = Instance.new("Frame", TitleBar)
 TitleBarBottomCover.Size = UDim2.new(1, 0, 0, 10)
 TitleBarBottomCover.Position = UDim2.new(0, 0, 1, -10)
 TitleBarBottomCover.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 TitleBarBottomCover.BorderSizePixel = 0
-TitleBarBottomCover.Parent = TitleBar
 
-local TitleDot = Instance.new("Frame")
+local TitleDot = Instance.new("Frame", TitleBar)
 TitleDot.Size = UDim2.new(0, 6, 0, 6)
 TitleDot.Position = UDim2.new(0, 16, 0.5, -3)
 TitleDot.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
 TitleDot.BorderSizePixel = 0
-TitleDot.Parent = TitleBar
+Instance.new("UICorner", TitleDot).CornerRadius = UDim.new(1, 0)
 
-local TitleDotCorner = Instance.new("UICorner")
-TitleDotCorner.CornerRadius = UDim.new(1, 0)
-TitleDotCorner.Parent = TitleDot
-
-local Title = Instance.new("TextLabel")
+local Title = Instance.new("TextLabel", TitleBar)
 Title.Size = UDim2.new(1, -110, 1, 0)
 Title.Position = UDim2.new(0, 32, 0, 0)
 Title.BackgroundTransparency = 1
@@ -214,9 +343,8 @@ Title.TextColor3 = Color3.fromRGB(255, 255, 255)
 Title.TextSize = 17
 Title.Font = Enum.Font.GothamBold
 Title.TextXAlignment = Enum.TextXAlignment.Left
-Title.Parent = TitleBar
 
-local Creator = Instance.new("TextLabel")
+local Creator = Instance.new("TextLabel", TitleBar)
 Creator.Size = UDim2.new(0, 60, 1, 0)
 Creator.Position = UDim2.new(1, -100, 0, 0)
 Creator.BackgroundTransparency = 1
@@ -225,7 +353,6 @@ Creator.TextColor3 = Color3.fromRGB(120, 120, 120)
 Creator.TextSize = 11
 Creator.Font = Enum.Font.Gotham
 Creator.TextXAlignment = Enum.TextXAlignment.Right
-Creator.Parent = TitleBar
 
 local CollapseElements = { TitleDot, Title, Creator, TitleBarBottomCover }
 
@@ -233,7 +360,7 @@ local CollapseElements = { TitleDot, Title, Creator, TitleBarBottomCover }
 -- MINIMIZE BUTTON
 --------------------------------------------------
 
-local MinimizeBtn = Instance.new("TextButton")
+local MinimizeBtn = Instance.new("TextButton", TitleBar)
 MinimizeBtn.Size = UDim2.new(0, 28, 0, 28)
 MinimizeBtn.Position = UDim2.new(1, -38, 0, 10)
 MinimizeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
@@ -243,21 +370,13 @@ MinimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 MinimizeBtn.TextSize = 16
 MinimizeBtn.Font = Enum.Font.GothamBold
 MinimizeBtn.AutoButtonColor = false
-MinimizeBtn.Parent = TitleBar
-
-local MinimizeBtnCorner = Instance.new("UICorner")
-MinimizeBtnCorner.CornerRadius = UDim.new(0, 6)
-MinimizeBtnCorner.Parent = MinimizeBtn
+Instance.new("UICorner", MinimizeBtn).CornerRadius = UDim.new(0, 6)
 
 MinimizeBtn.MouseEnter:Connect(function()
-    TweenService:Create(MinimizeBtn, TweenInfo.new(0.15), {
-        BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    }):Play()
+    TweenService:Create(MinimizeBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(60, 60, 60) }):Play()
 end)
 MinimizeBtn.MouseLeave:Connect(function()
-    TweenService:Create(MinimizeBtn, TweenInfo.new(0.15), {
-        BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-    }):Play()
+    TweenService:Create(MinimizeBtn, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(45, 45, 45) }):Play()
 end)
 
 --------------------------------------------------
@@ -265,8 +384,7 @@ end)
 --------------------------------------------------
 
 local dragging = false
-local dragStart
-local startPos
+local dragStart, startPos
 
 TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -274,11 +392,8 @@ TitleBar.InputBegan:Connect(function(input)
         dragging = true
         dragStart = input.Position
         startPos = Main.Position
-
         input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
         end)
     end
 end)
@@ -288,10 +403,8 @@ UserInputService.InputChanged:Connect(function(input)
     or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
         Main.Position = UDim2.new(
-            startPos.X.Scale,
-            startPos.X.Offset + delta.X,
-            startPos.Y.Scale,
-            startPos.Y.Offset + delta.Y
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
         )
     end
 end)
@@ -308,7 +421,7 @@ local function hideOnMinimize(obj)
 end
 
 local function createSection(text, y)
-    local Label = Instance.new("TextLabel")
+    local Label = Instance.new("TextLabel", Main)
     Label.Size = UDim2.new(1, -28, 0, 16)
     Label.Position = UDim2.new(0, 14, 0, y)
     Label.BackgroundTransparency = 1
@@ -317,12 +430,11 @@ local function createSection(text, y)
     Label.TextSize = 11
     Label.Font = Enum.Font.GothamBold
     Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Main
     return hideOnMinimize(Label)
 end
 
 local function createButton(text, y)
-    local Button = Instance.new("TextButton")
+    local Button = Instance.new("TextButton", Main)
     Button.Size = UDim2.new(1, -28, 0, 30)
     Button.Position = UDim2.new(0, 14, 0, y)
     Button.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
@@ -332,48 +444,34 @@ local function createButton(text, y)
     Button.TextSize = 13
     Button.Font = Enum.Font.Gotham
     Button.AutoButtonColor = false
-    Button.Parent = Main
-
-    local ButtonCorner = Instance.new("UICorner")
-    ButtonCorner.CornerRadius = UDim.new(0, 6)
-    ButtonCorner.Parent = Button
-
+    Instance.new("UICorner", Button).CornerRadius = UDim.new(0, 6)
     return hideOnMinimize(Button)
 end
 
 local function createToggle(settingName, text, y, callback)
     local Button = createButton("", y)
-
     local function refresh()
         if Settings[settingName] then
             Button.Text = "● " .. text
             Button.TextColor3 = Color3.fromRGB(255, 255, 255)
-            TweenService:Create(Button, TweenInfo.new(0.15), {
-                BackgroundColor3 = Color3.fromRGB(48, 48, 48)
-            }):Play()
+            TweenService:Create(Button, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(48, 48, 48) }):Play()
         else
             Button.Text = "○ " .. text
             Button.TextColor3 = Color3.fromRGB(150, 150, 150)
-            TweenService:Create(Button, TweenInfo.new(0.15), {
-                BackgroundColor3 = Color3.fromRGB(32, 32, 32)
-            }):Play()
+            TweenService:Create(Button, TweenInfo.new(0.15), { BackgroundColor3 = Color3.fromRGB(32, 32, 32) }):Play()
         end
     end
-
     Button.MouseButton1Click:Connect(function()
         Settings[settingName] = not Settings[settingName]
         refresh()
-        if callback then
-            callback(Settings[settingName])
-        end
+        if callback then callback(Settings[settingName]) end
     end)
-
     refresh()
     return Button, refresh
 end
 
 local function createTextBox(labelText, y, getValue, setValue)
-    local Label = Instance.new("TextLabel")
+    local Label = Instance.new("TextLabel", Main)
     Label.Size = UDim2.new(0.5, -14, 0, 26)
     Label.Position = UDim2.new(0, 14, 0, y)
     Label.BackgroundTransparency = 1
@@ -382,10 +480,9 @@ local function createTextBox(labelText, y, getValue, setValue)
     Label.TextSize = 12
     Label.Font = Enum.Font.Gotham
     Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Main
     hideOnMinimize(Label)
 
-    local Box = Instance.new("TextBox")
+    local Box = Instance.new("TextBox", Main)
     Box.Size = UDim2.new(0.5, -14, 0, 26)
     Box.Position = UDim2.new(0.5, 0, 0, y)
     Box.BackgroundColor3 = Color3.fromRGB(38, 38, 38)
@@ -395,21 +492,14 @@ local function createTextBox(labelText, y, getValue, setValue)
     Box.TextSize = 12
     Box.Font = Enum.Font.Gotham
     Box.ClearTextOnFocus = false
-    Box.Parent = Main
     hideOnMinimize(Box)
-
-    local BoxCorner = Instance.new("UICorner")
-    BoxCorner.CornerRadius = UDim.new(0, 6)
-    BoxCorner.Parent = Box
+    Instance.new("UICorner", Box).CornerRadius = UDim.new(0, 6)
 
     Box.FocusLost:Connect(function()
         local value = tonumber(Box.Text)
-        if value then
-            setValue(value)
-        end
+        if value then setValue(value) end
         Box.Text = tostring(getValue())
     end)
-
     return Box
 end
 
@@ -419,7 +509,7 @@ end
 
 local RevealButton = createButton("REVEAL", 62)
 
-local RevealStatusLabel = Instance.new("TextLabel")
+local RevealStatusLabel = Instance.new("TextLabel", Main)
 RevealStatusLabel.Size = UDim2.new(1, -28, 0, 16)
 RevealStatusLabel.Position = UDim2.new(0, 14, 0, 98)
 RevealStatusLabel.BackgroundTransparency = 1
@@ -428,44 +518,29 @@ RevealStatusLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
 RevealStatusLabel.TextSize = 11
 RevealStatusLabel.Font = Enum.Font.Gotham
 RevealStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
-RevealStatusLabel.Parent = Main
 hideOnMinimize(RevealStatusLabel)
 
-local RevealBarBack = Instance.new("Frame")
+local RevealBarBack = Instance.new("Frame", Main)
 RevealBarBack.Size = UDim2.new(1, -28, 0, 6)
 RevealBarBack.Position = UDim2.new(0, 14, 0, 116)
 RevealBarBack.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 RevealBarBack.BorderSizePixel = 0
-RevealBarBack.Parent = Main
 hideOnMinimize(RevealBarBack)
+Instance.new("UICorner", RevealBarBack).CornerRadius = UDim.new(1, 0)
 
-local RevealBarBackCorner = Instance.new("UICorner")
-RevealBarBackCorner.CornerRadius = UDim.new(1, 0)
-RevealBarBackCorner.Parent = RevealBarBack
-
-local RevealBar = Instance.new("Frame")
+local RevealBar = Instance.new("Frame", RevealBarBack)
 RevealBar.Size = UDim2.new(1, 0, 1, 0)
 RevealBar.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
 RevealBar.BorderSizePixel = 0
-RevealBar.Parent = RevealBarBack
-
-local RevealBarCorner = Instance.new("UICorner")
-RevealBarCorner.CornerRadius = UDim.new(1, 0)
-RevealBarCorner.Parent = RevealBar
+Instance.new("UICorner", RevealBar).CornerRadius = UDim.new(1, 0)
 
 activateReveal = function()
     if RevealActive or RevealCooldown then return end
-
     RevealActive = true
     RevealEnd = tick() + REVEAL_DURATION
-
-    TweenService:Create(RevealButton, TweenInfo.new(0.1), {
-        BackgroundColor3 = Color3.fromRGB(0, 200, 255)
-    }):Play()
+    TweenService:Create(RevealButton, TweenInfo.new(0.1), { BackgroundColor3 = Color3.fromRGB(0, 200, 255) }):Play()
     task.delay(0.1, function()
-        TweenService:Create(RevealButton, TweenInfo.new(0.2), {
-            BackgroundColor3 = Color3.fromRGB(38, 38, 38)
-        }):Play()
+        TweenService:Create(RevealButton, TweenInfo.new(0.2), { BackgroundColor3 = Color3.fromRGB(38, 38, 38) }):Play()
     end)
 end
 
@@ -473,7 +548,6 @@ RevealButton.MouseButton1Click:Connect(activateReveal)
 
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     local now = tick()
-
     if RevealActive then
         local remaining = RevealEnd - now
         if remaining <= 0 then
@@ -488,7 +562,6 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
             return
         end
     end
-
     if RevealCooldown then
         local remaining = RevealCooldownEnd - now
         if remaining <= 0 then
@@ -513,10 +586,10 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
 end))
 
 --------------------------------------------------
--- MINIMIZE / EXPAND LOGIC
+-- MINIMIZE / EXPAND
 --------------------------------------------------
 
-local EXPANDED_SIZE = UDim2.new(0, 280, 0, 560)
+local EXPANDED_SIZE = UDim2.new(0, 280, 0, 590)
 local COLLAPSED_SIZE = UDim2.new(0, 48, 0, 48)
 local IsMinimized = false
 
@@ -524,20 +597,27 @@ local function setMinimized(min)
     if IsMinimized == min then return end
     IsMinimized = min
 
+    local absPos = Main.AbsolutePosition
+    local absSize = Main.AbsoluteSize
+    local oldRight = absPos.X + absSize.X
+    local oldTop = absPos.Y
+
     if min then
         for _, v in ipairs(BodyElements) do v.Visible = false end
         for _, v in ipairs(CollapseElements) do v.Visible = false end
     end
 
-    local tween = TweenService:Create(
-        Main,
-        TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-        { Size = min and COLLAPSED_SIZE or EXPANDED_SIZE }
-    )
-    tween:Play()
+    local target = min and COLLAPSED_SIZE or EXPANDED_SIZE
+    local newX = oldRight - target.X.Offset
+    local newPos = UDim2.new(0, newX, 0, oldTop)
 
+    MinimizeBtn.Position = UDim2.new(1, -38, 0, 10)
     MinimizeBtn.Text = min and "+" or "–"
-    MinimizeBtn.Position = min and UDim2.new(0, 10, 0, 10) or UDim2.new(1, -38, 0, 10)
+
+    local tween = TweenService:Create(Main,
+        TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+        { Size = target, Position = newPos })
+    tween:Play()
 
     if not min then
         tween.Completed:Connect(function()
@@ -589,9 +669,7 @@ createSection("Targets", 240)
 createToggle("ShowBots", "Show Bots", 262, function(enabled)
     if enabled then
         task.defer(function()
-            if not Unloaded then
-                scanExistingBots()
-            end
+            if not Unloaded then scanExistingBots() end
         end)
     else
         removeAllBots()
@@ -601,13 +679,14 @@ end)
 createSection("Display", 306)
 createToggle("ShowName", "Name", 328)
 createToggle("ShowDistance", "Distance", 362)
+createToggle("NotifyEnabled", "Proximity Alerts", 396)
 
-createSection("Configuration", 406)
-createTextBox("Distance", 428,
+createSection("Configuration", 442)
+createTextBox("Distance", 464,
     function() return Settings.MaxDistance end,
     function(v) Settings.MaxDistance = math.clamp(v, 10, 5000) end
 )
-createTextBox("Scan Rate", 460,
+createTextBox("Scan Rate", 496,
     function() return Settings.ScanRate end,
     function(v) Settings.ScanRate = math.clamp(v, 1, 60) end
 )
@@ -616,18 +695,15 @@ createTextBox("Scan Rate", 460,
 -- UNLOAD
 --------------------------------------------------
 
-local UnloadButton = createButton("UNLOAD", 512)
+local UnloadButton = createButton("UNLOAD", 548)
 UnloadButton.BackgroundColor3 = Color3.fromRGB(60, 25, 25)
 
 UnloadButton.MouseButton1Click:Connect(function()
     Unloaded = true
-
     for _, connection in ipairs(Connections) do
         pcall(function() connection:Disconnect() end)
     end
-
     if HighlightCache then HighlightCache:Destroy() end
-
     if SavedLighting then
         Lighting.Ambient = SavedLighting.Ambient
         Lighting.OutdoorAmbient = SavedLighting.OutdoorAmbient
@@ -636,53 +712,11 @@ UnloadButton.MouseButton1Click:Connect(function()
         Lighting.GlobalShadows = SavedLighting.GlobalShadows
         SavedLighting = nil
     end
-
     ScreenGui:Destroy()
 end)
 
 --------------------------------------------------
--- TARGET DETECTION
---------------------------------------------------
-
-local function isPlayerCharacter(model)
-    if not model or not model:IsA("Model") then return false end
-    return Players:GetPlayerFromCharacter(model) ~= nil
-end
-
-local function getRoot(model)
-    if not model or not model:IsA("Model") then return nil end
-    local root = model:FindFirstChild("HumanoidRootPart")
-    if root and root:IsA("BasePart") then return root end
-    if model.PrimaryPart then return model.PrimaryPart end
-    for _, obj in ipairs(model:GetChildren()) do
-        if obj:IsA("BasePart") then return obj end
-    end
-    return nil
-end
-
-local function isBot(model)
-    if not model or not model:IsA("Model") then return false end
-    if isPlayerCharacter(model) then return false end
-
-    -- Skip anything under the local player's character (guns, tools, arms)
-    local localChar = LocalPlayer.Character
-    if localChar and model:IsDescendantOf(localChar) then
-        return false
-    end
-
-    -- Skip anything under the Camera (first-person viewmodels)
-    if model:IsDescendantOf(Camera) then
-        return false
-    end
-
-    local humanoid = model:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return false end
-
-    return getRoot(model) ~= nil
-end
-
---------------------------------------------------
--- HIGHLIGHT + BILLBOARD CREATION
+-- TARGET DATA
 --------------------------------------------------
 
 local function createTargetData(isTargetBot)
@@ -695,15 +729,6 @@ local function createTargetData(isTargetBot)
     highlight.Adornee = nil
     highlight.Parent = HighlightCache
 
-    local armorHighlight = Instance.new("Highlight")
-    armorHighlight.Name = "UltimateX_ArmorHighlight"
-    armorHighlight.FillTransparency = 0.15
-    armorHighlight.OutlineTransparency = 1
-    armorHighlight.DepthMode = Enum.HighlightDepthMode.Occluded
-    armorHighlight.Enabled = false
-    armorHighlight.Adornee = nil
-    armorHighlight.Parent = HighlightCache
-
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "UltimateX_Info"
     billboard.Size = UDim2.new(0, 150, 0, 40)
@@ -713,7 +738,7 @@ local function createTargetData(isTargetBot)
     billboard.Adornee = nil
     billboard.Parent = HighlightCache
 
-    local text = Instance.new("TextLabel")
+    local text = Instance.new("TextLabel", billboard)
     text.Size = UDim2.new(1, 0, 1, 0)
     text.BackgroundTransparency = 1
     text.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -721,20 +746,16 @@ local function createTargetData(isTargetBot)
     text.TextSize = 12
     text.Font = Enum.Font.GothamBold
     text.TextYAlignment = Enum.TextYAlignment.Center
-    text.Parent = billboard
 
     if isTargetBot then
         highlight.FillColor = Color3.fromRGB(255, 30, 30)
-        armorHighlight.FillColor = Color3.fromRGB(255, 30, 30)
         text.TextColor3 = Color3.fromRGB(255, 30, 30)
     else
         highlight.FillColor = Color3.fromRGB(255, 255, 255)
-        armorHighlight.FillColor = Color3.fromRGB(255, 210, 130)
     end
 
     return {
         Highlight = highlight,
-        ArmorHighlight = armorHighlight,
         Billboard = billboard,
         Text = text,
         IsBot = isTargetBot,
@@ -743,9 +764,12 @@ local function createTargetData(isTargetBot)
         LastShowInfo = false,
         BoundChar = nil,
         CharBoundAt = 0,
-        ArmorAdornee = nil,
     }
 end
+
+--------------------------------------------------
+-- PLAYER SETUP
+--------------------------------------------------
 
 local function setupPlayer(player)
     if player == LocalPlayer then return end
@@ -756,26 +780,13 @@ local function setupPlayer(player)
 
     local function bindCharacter(character)
         if Unloaded then return end
-
         data.BoundChar = character
         data.CharBoundAt = tick()
-
         data.Highlight.Adornee = character
         data.Billboard.Adornee = character:FindFirstChild("HumanoidRootPart")
-
-        local welded = character:FindFirstChild("WeldedObjects")
-        if welded then
-            data.ArmorAdornee = welded
-            data.ArmorHighlight.Adornee = welded
-        else
-            data.ArmorAdornee = nil
-            data.ArmorHighlight.Adornee = nil
-        end
     end
 
-    if player.Character then
-        bindCharacter(player.Character)
-    end
+    if player.Character then bindCharacter(player.Character) end
 
     table.insert(Connections, player.CharacterAdded:Connect(function(character)
         task.wait(0.15)
@@ -784,8 +795,6 @@ local function setupPlayer(player)
 
     table.insert(Connections, player.CharacterRemoving:Connect(function()
         data.Highlight.Adornee = nil
-        data.ArmorHighlight.Adornee = nil
-        data.ArmorAdornee = nil
         data.Billboard.Adornee = nil
         data.BoundChar = nil
         data.CharBoundAt = 0
@@ -803,10 +812,10 @@ table.insert(Connections, Players.PlayerRemoving:Connect(function(player)
     local data = ESP[player]
     if data then
         if data.Highlight then data.Highlight:Destroy() end
-        if data.ArmorHighlight then data.ArmorHighlight:Destroy() end
         if data.Billboard then data.Billboard:Destroy() end
         ESP[player] = nil
     end
+    NotifyState[player] = nil
 end))
 
 --------------------------------------------------
@@ -817,9 +826,9 @@ local function removeBot(model)
     local data = BotESP[model]
     if not data then return end
     if data.Highlight then data.Highlight:Destroy() end
-    if data.ArmorHighlight then data.ArmorHighlight:Destroy() end
     if data.Billboard then data.Billboard:Destroy() end
     BotESP[model] = nil
+    NotifyState[model] = nil
 end
 
 local function registerBot(model)
@@ -830,12 +839,6 @@ local function registerBot(model)
     data.CharBoundAt = tick()
     data.Highlight.Adornee = model
     data.Billboard.Adornee = model:FindFirstChild("HumanoidRootPart")
-
-    local welded = model:FindFirstChild("WeldedObjects")
-    if welded then
-        data.ArmorAdornee = welded
-        data.ArmorHighlight.Adornee = welded
-    end
 end
 
 local function tryRegisterBot(obj)
@@ -852,9 +855,7 @@ local function tryRegisterBot(obj)
     task.delay(0.25, function()
         if Unloaded or not Settings.ShowBots then return end
         if BotESP[obj] then return end
-        if obj.Parent and isBot(obj) then
-            registerBot(obj)
-        end
+        if obj.Parent and isBot(obj) then registerBot(obj) end
     end)
 end
 
@@ -870,21 +871,16 @@ scanExistingBots = function()
 end
 
 removeAllBots = function()
-    for model, _ in pairs(BotESP) do
-        removeBot(model)
+    for model, _ in pairs(BotESP) do        removeBot(model)
     end
 end
 
 table.insert(Connections, workspace.DescendantAdded:Connect(function(obj)
-    if Settings.ShowBots then
-        tryRegisterBot(obj)
-    end
+    if Settings.ShowBots then tryRegisterBot(obj) end
 end))
 
 table.insert(Connections, workspace.DescendantRemoving:Connect(function(obj)
-    if BotESP[obj] then
-        removeBot(obj)
-    end
+    if BotESP[obj] then removeBot(obj) end
 end))
 
 --------------------------------------------------
@@ -941,7 +937,6 @@ table.insert(Connections, UserInputService.InputBegan:Connect(function(input, ga
 
     if input.KeyCode == THERMAL_KEYBIND then
         Settings.Thermal = not Settings.Thermal
-
         if not Settings.Thermal then
             if Settings.DarkEnvironment then
                 DarkWasEnabledBeforeThermalOff = true
@@ -959,7 +954,6 @@ table.insert(Connections, UserInputService.InputBegan:Connect(function(input, ga
                 if RefreshDarkToggle then RefreshDarkToggle() end
             end
         end
-
         if RefreshThermalToggle then RefreshThermalToggle() end
         return
     end
@@ -980,7 +974,6 @@ local function processTarget(target, data, camPos, effectiveMaxDistance, now)
     if not data.BoundChar or not data.BoundChar.Parent then
         if data.LastShown then
             data.Highlight.Enabled = false
-            if data.ArmorHighlight then data.ArmorHighlight.Enabled = false end
             data.LastShown = false
         end
         if data.LastShowInfo then
@@ -995,7 +988,6 @@ local function processTarget(target, data, camPos, effectiveMaxDistance, now)
 
     local distance = (camPos - root.Position).Magnitude
     local withinDistance = distance <= effectiveMaxDistance
-
     local stable = (now - data.CharBoundAt) >= STREAM_GRACE
 
     local shouldShow = withinDistance and Settings.Thermal and stable
@@ -1005,22 +997,15 @@ local function processTarget(target, data, camPos, effectiveMaxDistance, now)
 
     if data.LastShown ~= shouldShow then
         data.Highlight.Enabled = shouldShow
-        if data.ArmorHighlight then
-            data.ArmorHighlight.Enabled = shouldShow and data.ArmorAdornee ~= nil
-        end
         data.LastShown = shouldShow
     end
 
     if shouldShow then
         local wantXray = RevealActive
         if data.LastXray ~= wantXray then
-            local mode = wantXray
+            data.Highlight.DepthMode = wantXray
                 and Enum.HighlightDepthMode.AlwaysOnTop
                 or  Enum.HighlightDepthMode.Occluded
-            data.Highlight.DepthMode = mode
-            if data.ArmorHighlight then
-                data.ArmorHighlight.DepthMode = mode
-            end
             data.LastXray = wantXray
         end
     end
@@ -1037,30 +1022,21 @@ local function processTarget(target, data, camPos, effectiveMaxDistance, now)
     if showInfo then
         data.Billboard.Adornee = root
         local text = ""
-        if Settings.ShowName then
-            text = target.Name
-        end
+        if Settings.ShowName then text = target.Name end
         if Settings.ShowDistance then
             if text ~= "" then text = text .. "\n" end
             text = text .. math.floor(distance) .. " studs"
         end
-        if data.Text.Text ~= text then
-            data.Text.Text = text
-        end
+        if data.Text.Text ~= text then data.Text.Text = text end
     end
 end
 
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if Unloaded then return end
-
-    if Settings.DarkEnvironment then
-        applyDarkValues()
-    end
+    if Settings.DarkEnvironment then applyDarkValues() end
 
     local now = tick()
-    if now - lastScan < (1 / math.max(Settings.ScanRate, 1)) then
-        return
-    end
+    if now - lastScan < (1 / math.max(Settings.ScanRate, 1)) then return end
     lastScan = now
 
     local camPos = Camera.CFrame.Position
@@ -1069,10 +1045,11 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
     for player, data in pairs(ESP) do
         processTarget(player, data, camPos, effectiveMaxDistance, now)
     end
-
     for model, data in pairs(BotESP) do
         processTarget(model, data, camPos, effectiveMaxDistance, now)
     end
+
+    pcall(checkProximityNotifications, camPos)
 end))
 
 --------------------------------------------------
