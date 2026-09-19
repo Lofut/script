@@ -12,6 +12,7 @@ local Camera = workspace.CurrentCamera
 
 local THERMAL_KEYBIND = Enum.KeyCode.N
 local REVEAL_KEYBIND = Enum.KeyCode.H
+local MINIMIZE_KEYBIND = Enum.KeyCode.Z
 
 local STREAM_GRACE = 0.5
 
@@ -50,15 +51,18 @@ local REVEAL_DURATION = 10
 local REVEAL_COOLDOWN = 5
 
 local SavedLighting = nil
+local ThermalFilter = nil
 local DarkWasEnabledBeforeThermalOff = false
 
 local scanExistingBots
 local removeAllBots
 local updateDarkEnvironment
 local activateReveal
-local applyDarkValues
+local applyThermalFilter
+local clearThermalFilter
 local RefreshThermalToggle
 local RefreshDarkToggle
+local setMinimized
 
 --------------------------------------------------
 -- TARGET DETECTION HELPERS
@@ -592,10 +596,13 @@ end))
 local EXPANDED_SIZE = UDim2.new(0, 280, 0, 590)
 local COLLAPSED_SIZE = UDim2.new(0, 48, 0, 48)
 local IsMinimized = false
+local IsAnimating = false
 
-local function setMinimized(min)
+setMinimized = function(min)
+    if IsAnimating then return end
     if IsMinimized == min then return end
     IsMinimized = min
+    IsAnimating = true
 
     local absPos = Main.AbsolutePosition
     local absSize = Main.AbsoluteSize
@@ -617,16 +624,16 @@ local function setMinimized(min)
     local tween = TweenService:Create(Main,
         TweenInfo.new(0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
         { Size = target, Position = newPos })
-    tween:Play()
 
-    if not min then
-        tween.Completed:Connect(function()
-            if not IsMinimized then
-                for _, v in ipairs(BodyElements) do v.Visible = true end
-                for _, v in ipairs(CollapseElements) do v.Visible = true end
-            end
-        end)
-    end
+    tween.Completed:Connect(function()
+        IsAnimating = false
+        if not IsMinimized then
+            for _, v in ipairs(BodyElements) do v.Visible = true end
+            for _, v in ipairs(CollapseElements) do v.Visible = true end
+        end
+    end)
+
+    tween:Play()
 end
 
 MinimizeBtn.MouseButton1Click:Connect(function()
@@ -660,7 +667,7 @@ local ThermalToggle, RefreshThermalToggleLocal = createToggle("Thermal", "Therma
 end)
 RefreshThermalToggle = RefreshThermalToggleLocal
 
-local DarkToggle, RefreshDarkToggleLocal = createToggle("DarkEnvironment", "Dark Environment", 196, function(enabled)
+local DarkToggle, RefreshDarkToggleLocal = createToggle("DarkEnvironment", "Thermal Filter", 196, function(enabled)
     updateDarkEnvironment()
 end)
 RefreshDarkToggle = RefreshDarkToggleLocal
@@ -704,11 +711,11 @@ UnloadButton.MouseButton1Click:Connect(function()
         pcall(function() connection:Disconnect() end)
     end
     if HighlightCache then HighlightCache:Destroy() end
+    if ThermalFilter then ThermalFilter:Destroy() end
     if SavedLighting then
         Lighting.Ambient = SavedLighting.Ambient
         Lighting.OutdoorAmbient = SavedLighting.OutdoorAmbient
         Lighting.Brightness = SavedLighting.Brightness
-        Lighting.ClockTime = SavedLighting.ClockTime
         Lighting.GlobalShadows = SavedLighting.GlobalShadows
         SavedLighting = nil
     end
@@ -871,7 +878,8 @@ scanExistingBots = function()
 end
 
 removeAllBots = function()
-    for model, _ in pairs(BotESP) do        removeBot(model)
+    for model, _ in pairs(BotESP) do
+        removeBot(model)
     end
 end
 
@@ -884,23 +892,37 @@ table.insert(Connections, workspace.DescendantRemoving:Connect(function(obj)
 end))
 
 --------------------------------------------------
--- DARK ENVIRONMENT
+-- THERMAL FILTER (fixed darkness, no clock changes)
 --------------------------------------------------
 
-local DARK_VALUES = {
-    Ambient = Color3.fromRGB(15, 15, 15),
-    OutdoorAmbient = Color3.fromRGB(30, 30, 30),
-    Brightness = 0.6,
-    ClockTime = 0,
-    GlobalShadows = true,
-}
+applyThermalFilter = function()
+    if not ThermalFilter then
+        ThermalFilter = Instance.new("ColorCorrectionEffect")
+        ThermalFilter.Name = "UltimateX_ThermalFilter"
+        ThermalFilter.Brightness = -0.1
+        ThermalFilter.Contrast = 0.35
+        ThermalFilter.Saturation = -1
+        ThermalFilter.TintColor = Color3.fromRGB(200, 200, 200)
+        ThermalFilter.Parent = Lighting
+    end
 
-applyDarkValues = function()
-    Lighting.Ambient = DARK_VALUES.Ambient
-    Lighting.OutdoorAmbient = DARK_VALUES.OutdoorAmbient
-    Lighting.Brightness = DARK_VALUES.Brightness
-    Lighting.ClockTime = DARK_VALUES.ClockTime
-    Lighting.GlobalShadows = DARK_VALUES.GlobalShadows
+    -- Fixed cold state. Reapplied every frame so the game's day/night
+    -- cycle can't brighten or tint the world. ClockTime is never touched,
+    -- so no flicker fighting with the game's own scripts.
+    Lighting.Ambient = Color3.fromRGB(50, 50, 50)
+    Lighting.OutdoorAmbient = Color3.fromRGB(70, 70, 70)
+    Lighting.Brightness = 0.8
+    Lighting.GlobalShadows = true
+    Lighting.FogEnd = 1e6
+    Lighting.FogStart = 0
+    Lighting.FogColor = Color3.fromRGB(150, 150, 150)
+end
+
+clearThermalFilter = function()
+    if ThermalFilter then
+        ThermalFilter:Destroy()
+        ThermalFilter = nil
+    end
 end
 
 updateDarkEnvironment = function()
@@ -910,20 +932,25 @@ updateDarkEnvironment = function()
                 Ambient = Lighting.Ambient,
                 OutdoorAmbient = Lighting.OutdoorAmbient,
                 Brightness = Lighting.Brightness,
-                ClockTime = Lighting.ClockTime,
                 GlobalShadows = Lighting.GlobalShadows,
+                FogEnd = Lighting.FogEnd,
+                FogStart = Lighting.FogStart,
+                FogColor = Lighting.FogColor,
             }
         end
-        applyDarkValues()
+        applyThermalFilter()
     else
         if SavedLighting then
             Lighting.Ambient = SavedLighting.Ambient
             Lighting.OutdoorAmbient = SavedLighting.OutdoorAmbient
             Lighting.Brightness = SavedLighting.Brightness
-            Lighting.ClockTime = SavedLighting.ClockTime
             Lighting.GlobalShadows = SavedLighting.GlobalShadows
+            Lighting.FogEnd = SavedLighting.FogEnd
+            Lighting.FogStart = SavedLighting.FogStart
+            Lighting.FogColor = SavedLighting.FogColor
             SavedLighting = nil
         end
+        clearThermalFilter()
     end
 end
 
@@ -960,6 +987,11 @@ table.insert(Connections, UserInputService.InputBegan:Connect(function(input, ga
 
     if input.KeyCode == REVEAL_KEYBIND then
         activateReveal()
+        return
+    end
+
+    if input.KeyCode == MINIMIZE_KEYBIND then
+        setMinimized(not IsMinimized)
         return
     end
 end))
@@ -1033,7 +1065,10 @@ end
 
 table.insert(Connections, RunService.Heartbeat:Connect(function()
     if Unloaded then return end
-    if Settings.DarkEnvironment then applyDarkValues() end
+
+    if Settings.DarkEnvironment then
+        applyThermalFilter()
+    end
 
     local now = tick()
     if now - lastScan < (1 / math.max(Settings.ScanRate, 1)) then return end
@@ -1053,7 +1088,7 @@ table.insert(Connections, RunService.Heartbeat:Connect(function()
 end))
 
 --------------------------------------------------
--- INITIAL DARK EFFECT
+-- INITIAL THERMAL FILTER STATE
 --------------------------------------------------
 
 updateDarkEnvironment()
